@@ -16,9 +16,10 @@ from agents import agents
 from envs.env_utils import make_env_and_datasets
 from utils.datasets import Dataset, ReplayBuffer
 from utils.evaluation import evaluate, flatten
+from utils.evaluation_metrics import MetricsTracker
 from utils.flax_utils import restore_agent, save_agent
 from utils.log_utils import CsvLogger, get_exp_name, get_flag_dict, get_wandb_video, setup_wandb
-
+ 
 FLAGS = flags.FLAGS
 
 flags.DEFINE_string('run_group', 'Debug', 'Run group.')
@@ -107,6 +108,10 @@ def main(_):
     # Train agent.
     train_logger = CsvLogger(os.path.join(FLAGS.save_dir, 'train.csv'))
     eval_logger = CsvLogger(os.path.join(FLAGS.save_dir, 'eval.csv'))
+    
+    # Initialize comprehensive metrics tracker
+    metrics_tracker = MetricsTracker(FLAGS.env_name)
+    
     first_time = time.time()
     last_time = time.time()
 
@@ -123,6 +128,47 @@ def main(_):
                 agent, update_info = agent.update(batch, full_update=(i % config['actor_freq'] == 0))
             else:
                 agent, update_info = agent.update(batch)
+            
+            # Track training metrics for comprehensive evaluation
+            td_loss = update_info.get('critic/critic_loss', 0.0)
+            policy_actions = None
+            data_actions = batch['actions']
+            weights = None
+            
+            # Extract policy actions and weights if available
+            if config.get('advantage_weighted', False):
+                try:
+                    sample_obs = batch['observations'][:32]  # Sample subset for efficiency
+                    rng, sample_rng = jax.random.split(agent.rng)
+                    policy_actions = agent.sample_actions(sample_obs, seed=sample_rng)
+                    
+                    # Get weights from advantage weighting if active
+                    if 'actor/weights_mean' in update_info:
+                        # Approximate weights calculation
+                        q_values = agent.network.select('critic')(sample_obs, actions=batch['actions'][:32])
+                        if hasattr(agent.config, 'q_agg') and agent.config['q_agg'] == 'min':
+                            q = q_values.min(axis=0)
+                        else:
+                            q = q_values.mean(axis=0)
+                        
+                        if config['agent_name'] == 'ifql':
+                            v = agent.network.select('value')(sample_obs)
+                        else:
+                            v = q.mean()
+                        
+                        advantage = q - v
+                        beta = config.get('adv_weight_coeff', 1.0) / (jnp.abs(q).mean() + 1e-6)
+                        weights = jnp.exp(beta * advantage)
+                        weights = jnp.clip(weights, 0.1, 10.0)
+                except Exception as e:
+                    pass  # Skip if sampling fails
+            
+            metrics_tracker.add_training_metrics(
+                td_loss=td_loss,
+                policy_actions=policy_actions,
+                data_actions=data_actions[:32] if policy_actions is not None else None,
+                weights=weights
+            )
         else:
             # Online fine-tuning.
             online_rng, key = jax.random.split(online_rng)
@@ -173,6 +219,10 @@ def main(_):
                 agent, update_info = agent.update(batch, full_update=(i % config['actor_freq'] == 0))
             else:
                 agent, update_info = agent.update(batch)
+            
+            # Track training metrics for online phase too
+            td_loss = update_info.get('critic/critic_loss', 0.0)
+            metrics_tracker.add_training_metrics(td_loss=td_loss)
 
         # Log metrics.
         if i % FLAGS.log_interval == 0:
@@ -207,6 +257,22 @@ def main(_):
             if FLAGS.video_episodes > 0:
                 video = get_wandb_video(renders=renders)
                 eval_metrics['video'] = video
+
+            # Add evaluation results to comprehensive metrics tracker
+            returns = [traj['rewards'].sum() for traj in trajs]
+            info_dicts = [traj.get('infos', {}) for traj in trajs]
+            # Flatten info dicts if they are lists
+            flat_info_dicts = []
+            for info_dict in info_dicts:
+                if isinstance(info_dict, list) and len(info_dict) > 0:
+                    flat_info_dicts.append(info_dict[-1])  # Take final info
+                elif isinstance(info_dict, dict):
+                    flat_info_dicts.append(info_dict)
+            
+            metrics_tracker.add_evaluation(returns, flat_info_dicts, i)
+            
+            # Log comprehensive metrics
+            comprehensive_metrics = metrics_tracker.log_to_wandb(i, prefix="comprehensive")
 
             wandb.log(eval_metrics, step=i)
             eval_logger.log(eval_metrics, step=i)

@@ -6,6 +6,7 @@ import jax
 import jax.numpy as jnp
 import ml_collections
 import optax
+import distrax
 
 from utils.encoders import encoder_modules
 from utils.flax_utils import ModuleDict, TrainState, nonpytree_field
@@ -13,7 +14,7 @@ from utils.networks import ActorVectorField, Value
 
 
 class IFQLAgent(flax.struct.PyTreeNode):
-    """Implicit flow Q-learning (IFQL) agent.
+    """Implicit flow Q-learning (IFQL) agent with KL pessimism.
 
     IFQL is the flow variant of implicit diffusion Q-learning (IDQL).
     """
@@ -27,6 +28,80 @@ class IFQLAgent(flax.struct.PyTreeNode):
         """Compute the expectile loss."""
         weight = jnp.where(adv >= 0, expectile, (1 - expectile))
         return weight * (diff**2)
+
+    def compute_kl_penalty(self, batch, grad_params, rng):
+        """Compute KL divergence penalty for pessimism."""
+        batch_size = batch['observations'].shape[0]
+        
+        # Sample actions from current policy
+        rng, policy_rng = jax.random.split(rng)
+        policy_actions = self._sample_policy_actions(
+            batch['observations'], 
+            seed=policy_rng, 
+            num_samples=self.config['kl_num_samples'],
+            grad_params=grad_params
+        )
+        
+        # Compute Q-values for policy actions
+        obs_expanded = jnp.repeat(
+            jnp.expand_dims(batch['observations'], 1), 
+            self.config['kl_num_samples'], 
+            axis=1
+        )
+        obs_flat = obs_expanded.reshape(-1, *batch['observations'].shape[1:])
+        policy_actions_flat = policy_actions.reshape(-1, *policy_actions.shape[2:])
+        
+        q1, q2 = self.network.select('critic')(obs_flat, actions=policy_actions_flat, params=grad_params)
+        q_policy = jnp.minimum(q1, q2).reshape(batch_size, self.config['kl_num_samples'])
+        
+        # Compute Q-values for buffer actions
+        q1_buffer, q2_buffer = self.network.select('critic')(batch['observations'], actions=batch['actions'], params=grad_params)
+        q_buffer = jnp.minimum(q1_buffer, q2_buffer)
+        
+        # KL penalty: penalize high Q-values on policy actions relative to buffer actions
+        kl_penalty = jnp.maximum(0, q_policy.mean(axis=1) - q_buffer).mean()
+        
+        return kl_penalty
+
+    def _sample_policy_actions(self, observations, seed, num_samples, grad_params):
+        """Sample actions from the current policy for KL penalty computation."""
+        if self.config['encoder'] is not None:
+            observations = self.network.select('actor_flow_encoder')(observations)
+        
+        batch_size = observations.shape[0]
+        action_seed, noise_seed = jax.random.split(seed)
+        
+        # Sample noises
+        actions = jax.random.normal(
+            action_seed,
+            (batch_size, num_samples, self.config['action_dim'])
+        )
+        
+        # Expand observations for vectorized computation
+        n_observations = jnp.repeat(jnp.expand_dims(observations, 1), num_samples, axis=1)
+        n_observations = n_observations.reshape(-1, *observations.shape[1:])
+        actions_flat = actions.reshape(-1, self.config['action_dim'])
+        
+        # Integrate through flow using midpoint method
+        dt = 1.0 / self.config['flow_steps']
+        for i in range(self.config['flow_steps']):
+            t = jnp.full((actions_flat.shape[0], 1), i * dt)
+            
+            # First evaluation at current point
+            v1 = self.network.select('actor_flow')(n_observations, actions_flat, t, is_encoded=True, params=grad_params)
+            
+            # Midpoint evaluation
+            t_mid = t + dt / 2.0
+            actions_mid = actions_flat + v1 * dt / 2.0
+            v_mid = self.network.select('actor_flow')(n_observations, actions_mid, t_mid, is_encoded=True, params=grad_params)
+            
+            # Final step using midpoint velocity
+            actions_flat = actions_flat + v_mid * dt
+        
+        actions = actions_flat.reshape(batch_size, num_samples, self.config['action_dim'])
+        actions = jnp.clip(actions, -1, 1)
+        
+        return actions
 
     def value_loss(self, batch, grad_params):
         """Compute the IQL value loss."""
@@ -42,23 +117,30 @@ class IFQLAgent(flax.struct.PyTreeNode):
             'v_min': v.min(),
         }
 
-    def critic_loss(self, batch, grad_params):
-        """Compute the IQL critic loss."""
+    def critic_loss(self, batch, grad_params, rng=None):
+        """Compute the IQL critic loss with KL pessimism."""
         next_v = self.network.select('value')(batch['next_observations'])
         q = batch['rewards'] + self.config['discount'] * batch['masks'] * next_v
 
         q1, q2 = self.network.select('critic')(batch['observations'], actions=batch['actions'], params=grad_params)
         critic_loss = ((q1 - q) ** 2 + (q2 - q) ** 2).mean()
+        
+        # Add KL pessimism penalty
+        kl_penalty = 0.0
+        if self.config['kl_coeff'] > 0 and rng is not None:
+            kl_penalty = self.compute_kl_penalty(batch, grad_params, rng)
+            critic_loss = critic_loss + self.config['kl_coeff'] * kl_penalty
 
         return critic_loss, {
             'critic_loss': critic_loss,
+            'kl_penalty': kl_penalty,
             'q_mean': q.mean(),
             'q_max': q.max(),
             'q_min': q.min(),
         }
 
     def actor_loss(self, batch, grad_params, rng=None):
-        """Compute the behavioral flow-matching actor loss."""
+        """Compute the behavioral flow-matching actor loss with advantage weighting."""
         batch_size, action_dim = batch['actions'].shape
         rng, x_rng, t_rng = jax.random.split(rng, 3)
 
@@ -69,10 +151,44 @@ class IFQLAgent(flax.struct.PyTreeNode):
         vel = x_1 - x_0
 
         pred = self.network.select('actor_flow')(batch['observations'], x_t, t, params=grad_params)
-        actor_loss = jnp.mean((pred - vel) ** 2)
+        flow_mse = (pred - vel) ** 2
+        
+        # Compute advantage weights
+        adv_metrics = {}
+        if self.config['advantage_weighted'] and self.config['adv_weight_coeff'] > 0:
+            # Get Q-values and V-values for buffer actions
+            q1, q2 = self.network.select('critic')(batch['observations'], actions=batch['actions'])
+            q = jnp.minimum(q1, q2)  # Use min for conservative estimate
+            v = self.network.select('value')(batch['observations'])
+            
+            # Compute advantage: A(s,a) = Q(s,a) - V(s)
+            advantage = q - v
+            
+            # Compute advantage weights: w = exp(β * Adv)
+            # β is scaled by inverse of Q magnitude for stability
+            beta = self.config['adv_weight_coeff'] / (jnp.abs(q).mean() + 1e-6)
+            weights = jnp.exp(beta * advantage)
+            
+            # Clip weights to prevent extreme values
+            weights = jnp.clip(weights, 0.1, 10.0)
+            
+            # Apply weights to flow loss
+            actor_loss = jnp.mean(weights * flow_mse.mean(axis=-1))
+            
+            # Metrics for monitoring
+            adv_metrics.update({
+                'advantage_mean': advantage.mean(),
+                'advantage_std': advantage.std(),
+                'weights_mean': weights.mean(),
+                'weights_std': weights.std(),
+                'beta_effective': beta,
+            })
+        else:
+            actor_loss = jnp.mean(flow_mse)
 
         return actor_loss, {
             'actor_loss': actor_loss,
+            **adv_metrics,
         }
 
     @jax.jit
@@ -81,15 +197,16 @@ class IFQLAgent(flax.struct.PyTreeNode):
         info = {}
         rng = rng if rng is not None else self.rng
 
+        rng, value_rng, critic_rng, actor_rng = jax.random.split(rng, 4)
+
         value_loss, value_info = self.value_loss(batch, grad_params)
         for k, v in value_info.items():
             info[f'value/{k}'] = v
 
-        critic_loss, critic_info = self.critic_loss(batch, grad_params)
+        critic_loss, critic_info = self.critic_loss(batch, grad_params, rng=critic_rng)
         for k, v in critic_info.items():
             info[f'critic/{k}'] = v
 
-        rng, actor_rng = jax.random.split(rng)
         actor_loss, actor_info = self.actor_loss(batch, grad_params, actor_rng)
         for k, v in actor_info.items():
             info[f'actor/{k}'] = v
@@ -143,10 +260,22 @@ class IFQLAgent(flax.struct.PyTreeNode):
         )
         n_observations = jnp.repeat(jnp.expand_dims(observations, 0), self.config['num_samples'], axis=0)
         n_orig_observations = jnp.repeat(jnp.expand_dims(orig_observations, 0), self.config['num_samples'], axis=0)
+        
+        # Midpoint method integration
+        dt = 1.0 / self.config['flow_steps']
         for i in range(self.config['flow_steps']):
-            t = jnp.full((*observations.shape[:-1], self.config['num_samples'], 1), i / self.config['flow_steps'])
-            vels = self.network.select('actor_flow')(n_observations, actions, t, is_encoded=True)
-            actions = actions + vels / self.config['flow_steps']
+            t = jnp.full((*observations.shape[:-1], self.config['num_samples'], 1), i * dt)
+            
+            # First evaluation at current point
+            v1 = self.network.select('actor_flow')(n_observations, actions, t, is_encoded=True)
+            
+            # Midpoint evaluation
+            t_mid = t + dt / 2.0
+            actions_mid = actions + v1 * dt / 2.0
+            v_mid = self.network.select('actor_flow')(n_observations, actions_mid, t_mid, is_encoded=True)
+            
+            # Final step using midpoint velocity
+            actions = actions + v_mid * dt
         actions = jnp.clip(actions, -1, 1)
 
         # Pick the action with the highest Q-value.
@@ -243,8 +372,12 @@ def get_config():
             tau=0.005,  # Target network update rate.
             expectile=0.9,  # IQL expectile.
             num_samples=32,  # Number of action samples for rejection sampling.
-            flow_steps=10,  # Number of flow steps.
+            flow_steps=15,  # Number of flow steps (increased for better accuracy with midpoint method).
             encoder=ml_collections.config_dict.placeholder(str),  # Visual encoder name (None, 'impala_small', etc.).
+            kl_coeff=0.0,  # KL pessimism coefficient.
+            kl_num_samples=10,  # Number of samples for KL penalty.
+            advantage_weighted=False,  # Whether to use advantage-weighted flow matching.
+            adv_weight_coeff=1.0,  # Coefficient for advantage weighting (higher = more emphasis on good actions).
         )
     )
     return config
