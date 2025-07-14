@@ -268,7 +268,7 @@ def main(_):
                 eval_metrics['video'] = video
 
             # Add evaluation results to comprehensive metrics tracker
-            returns = [traj['rewards'].sum() for traj in trajs]
+            returns = [sum(traj['rewards']) for traj in trajs]
             info_dicts = [traj.get('infos', {}) for traj in trajs]
             # Flatten info dicts if they are lists
             flat_info_dicts = []
