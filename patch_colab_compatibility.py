@@ -55,24 +55,40 @@ def patch_mujoco_py():
                 self.model = model
                 self.data = data or mujoco.MjData(model)
                 
+            def step(self):
+                mujoco.mj_step(self.model, self.data)
+                
+            def forward(self):
+                mujoco.mj_forward(self.model, self.data)
+                
+            def reset(self):
+                mujoco.mj_resetData(self.model, self.data)
+                
         class MjViewerBridge:
             def __init__(self, sim):
                 self.sim = sim
+                
+            def render(self):
+                pass  # Mock render method
+                
+        class MjSimStateBridge:
+            def __init__(self):
+                pass
                 
         mujoco_py_bridge = type('mujoco_py', (), {})()
         mujoco_py_bridge.MjSim = MjSimBridge
         mujoco_py_bridge.MjViewer = MjViewerBridge
         mujoco_py_bridge.load_model_from_xml = mujoco.MjModel.from_xml_string
         mujoco_py_bridge.load_model_from_path = mujoco.MjModel.from_xml_path
-        mujoco_py_bridge.MjSimState = type('MjSimState', (), {})
-        mujoco_py_bridge.functions = mujoco.mjtNum
+        mujoco_py_bridge.MjSimState = MjSimStateBridge
+        mujoco_py_bridge.functions = mujoco  # Use mujoco module itself
         mujoco_py_bridge.cymj = mujoco
         
         sys.modules['mujoco_py'] = mujoco_py_bridge
         
-    except ImportError:
-        print("New mujoco not available, creating mock mujoco_py...")
-        # Fallback to mock if new mujoco isn't available
+    except (ImportError, AttributeError) as e:
+        print(f"New mujoco bridge failed ({e}), creating mock mujoco_py...")
+        # Fallback to mock if new mujoco isn't available or has issues
         mujoco_py_mock = MagicMock()
         mujoco_py_mock.MjSim = MagicMock()
         mujoco_py_mock.MjViewer = MagicMock()
