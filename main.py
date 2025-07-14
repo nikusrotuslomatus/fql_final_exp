@@ -1,6 +1,15 @@
 import os
 import platform
 
+# Universal compatibility patch for D4RL/mujoco_py issues
+try:
+    # Apply patches before importing D4RL-dependent modules
+    from patch_colab_compatibility import apply_all_patches
+    apply_all_patches()
+except ImportError as e:
+    print(f"Warning: Could not apply compatibility patches: {e}")
+    print("Proceeding without patches - some environments may have issues with D4RL imports")
+
 import json
 import random
 import time

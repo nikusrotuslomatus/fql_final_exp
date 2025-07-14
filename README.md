@@ -18,6 +18,55 @@
 
 This repository implements Flow Q-Learning (FQL) and Implicit Flow Q-Learning (IFQL) agents for offline reinforcement learning.
 
+## 🚀 Quick Start & Environment Compatibility
+
+This codebase works across different environments including Google Colab, Jupyter notebooks, and local installations. Automatic compatibility patches are applied for D4RL/mujoco_py issues.
+
+### Option 1: Automatic patches (recommended)
+```bash
+# Works in all environments - patches applied automatically
+python main.py --env_name=antmaze-medium-play-v0 --agent.kl_coeff=0.3
+```
+
+### Option 2: Explicit patch application
+```bash
+# If automatic patching doesn't work, use this
+python run_with_patches.py --env_name=antmaze-medium-play-v0 --agent.kl_coeff=0.3
+```
+
+### Option 3: Manual patch application
+```python
+# In Jupyter/Colab, run this cell first:
+from patch_colab_compatibility import apply_all_patches
+apply_all_patches()
+
+# Then run your training
+!python main.py --env_name=antmaze-medium-play-v0 --agent.kl_coeff=0.3
+```
+
+### Environment Detection
+The code automatically detects your environment:
+- **Google Colab**: Applies mujoco_py compatibility patches
+- **Jupyter**: Handles Jupyter-specific issues  
+- **Local**: Minimal patching, uses existing installations
+
+### 🧪 Testing Your Setup
+Before running training, test your environment compatibility:
+
+```bash
+# Test if your environment is properly configured
+python test_compatibility.py
+```
+
+This will check:
+- ✅ JAX installation and GPU/CPU detection
+- ✅ MuJoCo vs mujoco_py compatibility
+- ✅ D4RL import functionality  
+- ✅ Environment creation
+- ✅ Automatic patch application
+
+If tests pass, you're ready to train! If not, the script will suggest fixes.
+
 ## New Feature: KL Pessimism
 
 Both FQL and IFQL agents now support KL pessimism to prevent Q-function overestimation on out-of-distribution (OOD) actions. This is implemented as a penalty term in the critic loss that constrains the Q-values of policy-generated actions relative to buffer actions.
