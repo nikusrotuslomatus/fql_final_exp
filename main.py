@@ -1,5 +1,4 @@
 import os
-os.environ['CUDA_VISIBLE_DEVICES']='0'
 import platform
 
 # Universal compatibility patch for D4RL/mujoco_py issues
@@ -278,19 +277,19 @@ def main(_):
             td_loss = update_info.get('critic/critic_loss', 0.0)
             metrics_tracker.add_training_metrics(td_loss=td_loss)
 
-        # Log metrics.
+        # Log only essential metrics
         if i % FLAGS.log_interval == 0:
-            train_metrics = {f'training/{k}': v for k, v in update_info.items()}
-            if val_dataset is not None:
-                val_batch = val_dataset.sample(config['batch_size'])
-                _, val_info = agent.total_loss(val_batch, grad_params=None)
-                train_metrics.update({f'validation/{k}': v for k, v in val_info.items()})
-            train_metrics['time/epoch_time'] = (time.time() - last_time) / FLAGS.log_interval
-            train_metrics['time/total_time'] = time.time() - first_time
-            train_metrics.update(expl_metrics)
-            last_time = time.time()
-            wandb.log(train_metrics, step=i)
+            train_metrics = {
+                'step': i,
+                'td_loss': update_info['td_loss'],
+                'policy_loss': update_info.get('policy_loss', 0),
+            }
+            # Log only to CSV file
             train_logger.log(train_metrics, step=i)
+            
+            # Log to WandB only if explicitly enabled
+            if FLAGS.use_wandb:
+                wandb.log(train_metrics, step=i)
 
         # Evaluate agent.
         if FLAGS.eval_interval != 0 and (i == 1 or i % FLAGS.eval_interval == 0):
