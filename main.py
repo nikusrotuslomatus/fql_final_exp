@@ -289,6 +289,7 @@ def main(_):
             metrics_tracker.add_training_metrics(td_loss=td_loss)
 
         # Log only essential metrics
+        # Log only essential metrics
         if i % FLAGS.log_interval == 0:
             train_metrics = {
                 'step': i,
@@ -297,6 +298,10 @@ def main(_):
             }
             # Log only to CSV file
             train_logger.log(train_metrics, step=i)
+            
+            # Log to WandB only if explicitly enabled
+            if FLAGS.use_wandb:
+                wandb.log(train_metrics, step=i)
             
             # Log to WandB only if explicitly enabled
             if FLAGS.use_wandb:
