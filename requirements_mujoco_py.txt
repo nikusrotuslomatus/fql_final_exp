@@ -1,0 +1,29 @@
+# FQL Requirements with mujoco-py (simpler for D4RL compatibility)
+# Use this instead of requirements.txt if you want the old mujoco-py
+
+# Core ML libraries
+jax[cuda12]>=0.4.20
+flax>=0.8.0
+optax>=0.2.0
+numpy>=1.24.0
+scipy>=1.10.0
+
+# RL and environments
+mujoco-py>=2.0,<2.2  # Old mujoco-py for D4RL compatibility
+gymnasium>=0.29.0
+d4rl>=1.1
+gym>=0.21.0
+
+# Logging and monitoring
+wandb>=0.16.0
+tensorboard>=2.15.0
+absl-py>=2.0.0
+ml-collections>=0.1.1
+
+# Utilities
+tqdm>=4.65.0
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# Optional: for evaluation metrics
+scikit-learn>=1.3.0 

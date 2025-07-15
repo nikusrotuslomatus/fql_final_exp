@@ -54,6 +54,7 @@ flags.DEFINE_integer('video_frame_skip', 3, 'Frame skip for videos.')
 flags.DEFINE_float('p_aug', None, 'Probability of applying image augmentation.')
 flags.DEFINE_integer('frame_stack', None, 'Number of frames to stack.')
 flags.DEFINE_integer('balanced_sampling', 0, 'Whether to use balanced sampling for online fine-tuning.')
+flags.DEFINE_boolean('use_wandb', True, 'Whether to use Weights & Biases logging.')
 
 config_flags.DEFINE_config_file('agent', 'agents/fql.py', lock_config=False)
 
@@ -61,7 +62,11 @@ config_flags.DEFINE_config_file('agent', 'agents/fql.py', lock_config=False)
 def main(_):
     # Set up logger.
     exp_name = get_exp_name(FLAGS.seed)
-    setup_wandb(project='fql', group=FLAGS.run_group, name=exp_name)
+    if FLAGS.use_wandb:
+        setup_wandb(project='fql', group=FLAGS.run_group, name=exp_name)
+    else:
+        # Initialize wandb in offline mode for compatibility
+        wandb.init(mode='offline', project='fql', group=FLAGS.run_group, name=exp_name)
 
     FLAGS.save_dir = os.path.join(FLAGS.save_dir, wandb.run.project, FLAGS.run_group, exp_name)
     os.makedirs(FLAGS.save_dir, exist_ok=True)

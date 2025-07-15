@@ -20,28 +20,41 @@ This repository implements Flow Q-Learning (FQL) and Implicit Flow Q-Learning (I
 
 ## 🚀 Quick Start & Environment Compatibility
 
-This codebase works across different environments including Google Colab, Jupyter notebooks, and local installations. Automatic compatibility patches are applied for D4RL/mujoco_py issues.
+This codebase works across different environments including Google Colab, Jupyter notebooks, and local installations.
 
-### Option 1: Automatic patches (recommended)
+### Option 1: Google Colab Setup (recommended)
+```python
+# Step 1: In a Colab cell, run this to set up everything:
+exec(open('colab_setup.py').read())
+
+# Step 2: Restart Python kernel (Runtime -> Restart runtime)
+
+# Step 3: Test the installation:
+exec(open('test_mujoco_py.py').read())
+
+# Step 4: If tests pass, run training:
+!python main.py --env_name=antmaze-medium-play-v0 --agent.kl_coeff=0.3
+```
+
+### Option 2: Manual mujoco-py installation
 ```bash
-# Works in all environments - patches applied automatically
+# For advanced users - install mujoco-py manually
+python install_mujoco_py.py
+
+# Then run training directly
 python main.py --env_name=antmaze-medium-play-v0 --agent.kl_coeff=0.3
 ```
 
-### Option 2: Explicit patch application
+### Option 3: Automatic compatibility patches
+```bash
+# Works with newer mujoco - patches applied automatically
+python main.py --env_name=antmaze-medium-play-v0 --agent.kl_coeff=0.3
+```
+
+### Option 4: Explicit patch application
 ```bash
 # If automatic patching doesn't work, use this
 python run_with_patches.py --env_name=antmaze-medium-play-v0 --agent.kl_coeff=0.3
-```
-
-### Option 3: Manual patch application
-```python
-# In Jupyter/Colab, run this cell first:
-from patch_colab_compatibility import apply_all_patches
-apply_all_patches()
-
-# Then run your training
-!python main.py --env_name=antmaze-medium-play-v0 --agent.kl_coeff=0.3
 ```
 
 ### Environment Detection
