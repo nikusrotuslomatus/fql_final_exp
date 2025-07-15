@@ -1,14 +1,20 @@
 import os
 import platform
-
+os.environ['CUDA_VISIBLE_DEVICES']='0'
 # Universal compatibility patch for D4RL/mujoco_py issues
 try:
     # Apply patches before importing D4RL-dependent modules
-    from patch_colab_compatibility import apply_all_patches
+    from patch_docker_compatibility import apply_all_patches
     apply_all_patches()
 except ImportError as e:
-    print(f"Warning: Could not apply compatibility patches: {e}")
-    print("Proceeding without patches - some environments may have issues with D4RL imports")
+    print(f"Warning: Could not apply Docker compatibility patches: {e}")
+    try:
+        # Fallback to colab patches
+        from patch_colab_compatibility import apply_all_patches
+        apply_all_patches()
+    except ImportError:
+        print("Warning: No compatibility patches available")
+        print("Proceeding without patches - some environments may have issues with D4RL imports")
 
 import json
 import random
@@ -149,6 +155,7 @@ def main(_):
 
     step = 0
     done = True
+    ob = None
     expl_metrics = dict()
     online_rng = jax.random.PRNGKey(FLAGS.seed)
     for i in tqdm.tqdm(range(1, FLAGS.offline_steps + FLAGS.online_steps + 1), smoothing=0.1, dynamic_ncols=True):
@@ -157,7 +164,7 @@ def main(_):
             batch = train_dataset.sample(config['batch_size'])
 
             if config['agent_name'] == 'rebrac':
-                agent, update_info = agent.update(batch, full_update=(i % config['actor_freq'] == 0))
+                agent, update_info = agent.update(batch, full_update=(i % config.get('actor_freq', 2) == 0))
             else:
                 agent, update_info = agent.update(batch)
             
@@ -168,15 +175,15 @@ def main(_):
             # Always try to extract policy actions for KL computation
             try:
                 sample_obs = batch['observations'][:32]  # Sample subset for efficiency
-                rng, sample_rng = jax.random.split(agent.rng)
+                online_rng, sample_rng = jax.random.split(online_rng)
                 policy_actions = agent.sample_actions(sample_obs, seed=sample_rng)
                 
                 # Get weights from advantage weighting if active
                 weights = None
-                if config.get('advantage_weighted', False) and 'actor/weights_mean' in update_info:
+                if config.get('advantage_weighted', False):
                     # Approximate weights calculation
                     q_values = agent.network.select('critic')(sample_obs, actions=batch['actions'][:32])
-                    if hasattr(agent.config, 'q_agg') and agent.config['q_agg'] == 'min':
+                    if hasattr(agent.config, 'q_agg') and agent.config.get('q_agg') == 'min':
                         q = q_values.min(axis=0)
                     else:
                         q = q_values.mean(axis=0)
@@ -221,7 +228,7 @@ def main(_):
             if weights is not None and len(weights) > 0:
                 csv_training_metrics['advantage_weights'] = np.mean(weights)
             
-            csv_logger.log_training_metrics(step, csv_training_metrics)
+            csv_logger.log_training_metrics(i, csv_training_metrics)
         else:
             # Online fine-tuning.
             online_rng, key = jax.random.split(online_rng)
@@ -255,7 +262,11 @@ def main(_):
             ob = next_ob
 
             if done:
-                expl_metrics = {f'exploration/{k}': np.mean(v) for k, v in flatten(info).items()}
+                try:
+                    expl_metrics = {f'exploration/{k}': np.mean(v) if isinstance(v, (list, np.ndarray)) else v 
+                                   for k, v in flatten(info).items()}
+                except Exception as e:
+                    expl_metrics = {}
 
             step += 1
 
@@ -269,7 +280,7 @@ def main(_):
                 batch = train_dataset.sample(config['batch_size'])
 
             if config['agent_name'] == 'rebrac':
-                agent, update_info = agent.update(batch, full_update=(i % config['actor_freq'] == 0))
+                agent, update_info = agent.update(batch, full_update=(i % config.get('actor_freq', 2) == 0))
             else:
                 agent, update_info = agent.update(batch)
             
@@ -277,19 +288,19 @@ def main(_):
             td_loss = update_info.get('critic/critic_loss', 0.0)
             metrics_tracker.add_training_metrics(td_loss=td_loss)
 
-        # Log metrics.
+        # Log only essential metrics
         if i % FLAGS.log_interval == 0:
-            train_metrics = {f'training/{k}': v for k, v in update_info.items()}
-            if val_dataset is not None:
-                val_batch = val_dataset.sample(config['batch_size'])
-                _, val_info = agent.total_loss(val_batch, grad_params=None)
-                train_metrics.update({f'validation/{k}': v for k, v in val_info.items()})
-            train_metrics['time/epoch_time'] = (time.time() - last_time) / FLAGS.log_interval
-            train_metrics['time/total_time'] = time.time() - first_time
-            train_metrics.update(expl_metrics)
-            last_time = time.time()
-            wandb.log(train_metrics, step=i)
+            train_metrics = {
+                'step': i,
+                'td_loss': update_info.get('critic/critic_loss', 0.0),
+                'policy_loss': update_info.get('actor/actor_loss', 0.0),
+            }
+            # Log only to CSV file
             train_logger.log(train_metrics, step=i)
+            
+            # Log to WandB only if explicitly enabled
+            if FLAGS.use_wandb:
+                wandb.log(train_metrics, step=i)
 
         # Evaluate agent.
         if FLAGS.eval_interval != 0 and (i == 1 or i % FLAGS.eval_interval == 0):
@@ -337,6 +348,10 @@ def main(_):
             
             # Log comprehensive metrics
             comprehensive_metrics = metrics_tracker.log_to_wandb(i, prefix="comprehensive")
+            
+            # Extract metrics for CSV logging
+            success_rate = comprehensive_metrics.get('success_rate_percent', 0.0)
+            d4rl_score = comprehensive_metrics.get('d4rl_score', 0.0)
             
             # Log evaluation metrics to CSV
             csv_logger.log_evaluation_metrics(

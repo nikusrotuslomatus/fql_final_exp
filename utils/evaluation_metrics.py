@@ -221,6 +221,23 @@ class MetricsTracker:
             if len(self.weights_buffer) > 100:
                 self.weights_buffer = self.weights_buffer[-50:]
     
+    def compute_kl_divergence(self, policy_actions: jnp.ndarray, data_actions: jnp.ndarray) -> float:
+        """Compute KL divergence between policy and data actions."""
+        try:
+            # Ensure both arrays have the same shape
+            min_len = min(len(policy_actions), len(data_actions))
+            if min_len == 0:
+                return 0.0
+            
+            policy_actions = policy_actions[:min_len]
+            data_actions = data_actions[:min_len]
+            
+            # Compute KL divergence using the existing function
+            return float(compute_policy_data_kl(policy_actions, data_actions))
+        except Exception as e:
+            print(f"Warning: Could not compute KL divergence: {e}")
+            return 0.0
+    
     def compute_comprehensive_metrics(self, max_steps: int = 500000) -> Dict[str, float]:
         """Compute all comprehensive metrics."""
         metrics = {}
