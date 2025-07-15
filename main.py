@@ -1,4 +1,5 @@
 import os
+os.environ['CUDA_VISIBLE_DEVICES']='0'
 import platform
 
 # Universal compatibility patch for D4RL/mujoco_py issues
