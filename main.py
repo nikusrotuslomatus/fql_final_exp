@@ -15,6 +15,7 @@ import random
 import time
 
 import jax
+import jax.numpy as jnp
 import numpy as np
 import tqdm
 import wandb
@@ -26,6 +27,7 @@ from envs.env_utils import make_env_and_datasets
 from utils.datasets import Dataset, ReplayBuffer
 from utils.evaluation import evaluate, flatten
 from utils.evaluation_metrics import MetricsTracker
+from utils.csv_logger import CSVMetricsLogger, create_matplotlib_script
 from utils.flax_utils import restore_agent, save_agent
 from utils.log_utils import CsvLogger, get_exp_name, get_flag_dict, get_wandb_video, setup_wandb
  
@@ -121,6 +123,22 @@ def main(_):
     # Initialize comprehensive metrics tracker
     metrics_tracker = MetricsTracker(FLAGS.env_name)
     
+    # Initialize CSV logger
+    run_name = f"{FLAGS.env_name}_{FLAGS.run_group}_{int(time.time())}"
+    csv_logger = CSVMetricsLogger(log_dir="csv_logs", run_name=run_name)
+    
+    # Create matplotlib script for visualization
+    create_matplotlib_script(log_dir="csv_logs", run_name=run_name)
+    
+    # Debug configuration
+    print(f"Agent config type: {type(config)}")
+    print(f"Agent config keys: {list(config.keys()) if hasattr(config, 'keys') else 'No keys method'}")
+    print(f"Agent name: {config.get('agent_name', 'Unknown')}")
+    print(f"Advantage weighted: {config.get('advantage_weighted', False)}")
+    print(f"KL coeff: {config.get('kl_coeff', 0.0)}")
+    print(f"Adv weight coeff: {config.get('adv_weight_coeff', 1.0)}")
+    print(f"Agent config after creation: {agent.config if hasattr(agent, 'config') else 'No config'}")
+    
     first_time = time.time()
     last_time = time.time()
 
@@ -140,44 +158,65 @@ def main(_):
             
             # Track training metrics for comprehensive evaluation
             td_loss = update_info.get('critic/critic_loss', 0.0)
-            policy_actions = None
-            data_actions = batch['actions']
-            weights = None
             
             # Extract policy actions and weights if available
-            if config.get('advantage_weighted', False):
-                try:
-                    sample_obs = batch['observations'][:32]  # Sample subset for efficiency
-                    rng, sample_rng = jax.random.split(agent.rng)
-                    policy_actions = agent.sample_actions(sample_obs, seed=sample_rng)
+            # Always try to extract policy actions for KL computation
+            try:
+                sample_obs = batch['observations'][:32]  # Sample subset for efficiency
+                rng, sample_rng = jax.random.split(agent.rng)
+                policy_actions = agent.sample_actions(sample_obs, seed=sample_rng)
+                
+                # Get weights from advantage weighting if active
+                weights = None
+                if config.get('advantage_weighted', False) and 'actor/weights_mean' in update_info:
+                    # Approximate weights calculation
+                    q_values = agent.network.select('critic')(sample_obs, actions=batch['actions'][:32])
+                    if hasattr(agent.config, 'q_agg') and agent.config['q_agg'] == 'min':
+                        q = q_values.min(axis=0)
+                    else:
+                        q = q_values.mean(axis=0)
                     
-                    # Get weights from advantage weighting if active
-                    if 'actor/weights_mean' in update_info:
-                        # Approximate weights calculation
-                        q_values = agent.network.select('critic')(sample_obs, actions=batch['actions'][:32])
-                        if hasattr(agent.config, 'q_agg') and agent.config['q_agg'] == 'min':
-                            q = q_values.min(axis=0)
-                        else:
-                            q = q_values.mean(axis=0)
-                        
-                        if config['agent_name'] == 'ifql':
-                            v = agent.network.select('value')(sample_obs)
-                        else:
-                            v = q.mean()
-                        
-                        advantage = q - v
-                        beta = config.get('adv_weight_coeff', 1.0) / (jnp.abs(q).mean() + 1e-6)
-                        weights = jnp.exp(beta * advantage)
-                        weights = jnp.clip(weights, 0.1, 10.0)
-                except Exception as e:
-                    pass  # Skip if sampling fails
+                    if config['agent_name'] == 'ifql':
+                        v = agent.network.select('value')(sample_obs)
+                    else:
+                        v = q.mean()
+                    
+                    advantage = q - v
+                    beta = config.get('adv_weight_coeff', 1.0) / (jnp.abs(q).mean() + 1e-6)
+                    weights = jnp.exp(beta * advantage)
+                    weights = jnp.clip(weights, 0.1, 10.0)
+            except Exception as e:
+                policy_actions = None
+                weights = None
             
             metrics_tracker.add_training_metrics(
                 td_loss=td_loss,
                 policy_actions=policy_actions,
-                data_actions=data_actions[:32] if policy_actions is not None else None,
+                data_actions=batch['actions'][:32] if policy_actions is not None else None,
                 weights=weights
             )
+            
+            # Log training metrics to CSV
+            csv_training_metrics = {
+                'td_loss': td_loss,
+                'critic_loss': update_info.get('critic/critic_loss', 0.0),
+                'policy_loss': update_info.get('actor/actor_loss', 0.0),
+            }
+            
+            # Add KL divergence if available
+            if policy_actions is not None and len(policy_actions) > 0:
+                kl_div = metrics_tracker.compute_kl_divergence(policy_actions, batch['actions'][:32])
+                csv_training_metrics['kl_divergence'] = kl_div
+            
+            # Add Q values if available
+            if 'critic/q_mean' in update_info:
+                csv_training_metrics['q_values'] = update_info['critic/q_mean']
+            
+            # Add advantage weights if available
+            if weights is not None and len(weights) > 0:
+                csv_training_metrics['advantage_weights'] = np.mean(weights)
+            
+            csv_logger.log_training_metrics(step, csv_training_metrics)
         else:
             # Online fine-tuning.
             online_rng, key = jax.random.split(online_rng)
@@ -268,8 +307,17 @@ def main(_):
                 eval_metrics['video'] = video
 
             # Add evaluation results to comprehensive metrics tracker
-            returns = [sum(traj['rewards']) for traj in trajs]
-            info_dicts = [traj.get('infos', {}) for traj in trajs]
+            returns = [sum(traj['reward']) for traj in trajs]  # 'reward' not 'rewards'
+            info_dicts = [traj.get('info', {}) for traj in trajs]  # 'info' not 'infos'
+            
+            # Debug info structure
+            if len(info_dicts) > 0:
+                print(f"First info_dict type: {type(info_dicts[0])}")
+                if isinstance(info_dicts[0], list) and len(info_dicts[0]) > 0:
+                    print(f"First info_dict[0] keys: {list(info_dicts[0][-1].keys()) if isinstance(info_dicts[0][-1], dict) else 'Not a dict'}")
+                elif isinstance(info_dicts[0], dict):
+                    print(f"First info_dict keys: {list(info_dicts[0].keys())}")
+            
             # Flatten info dicts if they are lists
             flat_info_dicts = []
             for info_dict in info_dicts:
@@ -277,11 +325,21 @@ def main(_):
                     flat_info_dicts.append(info_dict[-1])  # Take final info
                 elif isinstance(info_dict, dict):
                     flat_info_dicts.append(info_dict)
+                else:
+                    flat_info_dicts.append({})  # Empty dict as fallback
             
             metrics_tracker.add_evaluation(returns, flat_info_dicts, i)
             
             # Log comprehensive metrics
             comprehensive_metrics = metrics_tracker.log_to_wandb(i, prefix="comprehensive")
+            
+            # Log evaluation metrics to CSV
+            csv_logger.log_evaluation_metrics(
+                step=i,
+                returns=returns,
+                success_rate=success_rate,
+                d4rl_score=d4rl_score
+            )
 
             wandb.log(eval_metrics, step=i)
             eval_logger.log(eval_metrics, step=i)
@@ -292,6 +350,11 @@ def main(_):
 
     train_logger.close()
     eval_logger.close()
+    
+    # Close CSV logger and create summary
+    csv_logger.close()
+    print(f"📊 CSV files saved in csv_logs/ directory")
+    print(f"📈 To visualize: python csv_logs/plot_{run_name}_metrics.py")
 
 
 if __name__ == '__main__':

@@ -425,7 +425,7 @@ def get_config():
             encoder=ml_collections.config_dict.placeholder(str),  # Visual encoder name (None, 'impala_small', etc.).
             kl_coeff=0.0,  # KL coefficient for pessimism.
             kl_num_samples=10,  # Number of samples for KL penalty.
-            advantage_weighted=False,  # Whether to use advantage-weighted flow matching.
+            advantage_weighted=True,  # Whether to use advantage-weighted flow matching.
             adv_weight_coeff=1.0,  # Coefficient for advantage weighting (higher = more emphasis on good actions).
         )
     )

@@ -184,19 +184,26 @@ class MetricsTracker:
         
     def add_evaluation(self, returns: List[float], info_dicts: List[Dict], step: int):
         """Add evaluation results."""
-        self.returns.extend(returns)
-        self.success_info.extend(info_dicts)
+        if returns:
+            self.returns.extend(returns)
+            print(f"Step {step}: Added {len(returns)} returns, mean={np.mean(returns):.3f}")
+        
+        if info_dicts:
+            self.success_info.extend(info_dicts)
         
         # Track evaluation score over time
-        mean_return = np.mean(returns)
-        self.eval_scores.append(mean_return)
-        self.eval_steps.append(step)
+        if returns:
+            mean_return = np.mean(returns)
+            self.eval_scores.append(mean_return)
+            self.eval_steps.append(step)
+            print(f"Step {step}: Tracking eval score {mean_return:.3f}")
     
     def add_training_metrics(self, td_loss: float, policy_actions: Optional[jnp.ndarray] = None,
                            data_actions: Optional[jnp.ndarray] = None, 
                            weights: Optional[jnp.ndarray] = None):
         """Add training step metrics."""
-        self.td_losses.append(td_loss)
+        if not np.isnan(td_loss) and not np.isinf(td_loss):
+            self.td_losses.append(td_loss)
         
         if policy_actions is not None:
             self.policy_actions_buffer.append(policy_actions)
@@ -220,24 +227,57 @@ class MetricsTracker:
         
         # 1. Success Rate
         if self.success_info:
-            metrics['success_rate_percent'] = compute_success_rate(self.success_info)
+            try:
+                metrics['success_rate_percent'] = compute_success_rate(self.success_info)
+            except Exception as e:
+                print(f"Warning: Could not compute success rate: {e}")
+                metrics['success_rate_percent'] = 0.0
+        else:
+            metrics['success_rate_percent'] = 0.0
         
         # 2. D4RL Normalized Score
         if self.returns:
-            metrics['d4rl_score'] = compute_d4rl_score(np.array(self.returns), self.env_name)
-            metrics['mean_return'] = float(np.mean(self.returns))
-            metrics['std_return'] = float(np.std(self.returns))
+            try:
+                metrics['d4rl_score'] = compute_d4rl_score(np.array(self.returns), self.env_name)
+                metrics['mean_return'] = float(np.mean(self.returns))
+                metrics['std_return'] = float(np.std(self.returns))
+                print(f"Computed mean_return: {metrics['mean_return']:.3f}")
+            except Exception as e:
+                print(f"Warning: Could not compute D4RL score: {e}")
+                metrics['d4rl_score'] = 0.0
+                metrics['mean_return'] = 0.0
+                metrics['std_return'] = 0.0
+        else:
+            metrics['d4rl_score'] = 0.0
+            metrics['mean_return'] = 0.0
+            metrics['std_return'] = 0.0
         
         # 3. Area Under Learning Curve
         if self.eval_scores and self.eval_steps:
-            metrics['auc_learning_curve'] = compute_auc(self.eval_scores, self.eval_steps, max_steps)
+            try:
+                metrics['auc_learning_curve'] = compute_auc(self.eval_scores, self.eval_steps, max_steps)
+            except Exception as e:
+                print(f"Warning: Could not compute AUC: {e}")
+                metrics['auc_learning_curve'] = 0.0
+        else:
+            metrics['auc_learning_curve'] = 0.0
         
         # 4. Divergence Detection
         if self.td_losses:
-            is_diverged, div_rate = detect_divergence(self.td_losses)
-            metrics['divergence_detected'] = float(is_diverged)
-            metrics['divergence_rate_percent'] = div_rate
-            metrics['final_td_loss'] = float(self.td_losses[-1]) if self.td_losses else 0.0
+            try:
+                is_diverged, div_rate = detect_divergence(self.td_losses)
+                metrics['divergence_detected'] = float(is_diverged)
+                metrics['divergence_rate_percent'] = div_rate
+                metrics['final_td_loss'] = float(self.td_losses[-1]) if self.td_losses else 0.0
+            except Exception as e:
+                print(f"Warning: Could not compute divergence: {e}")
+                metrics['divergence_detected'] = 0.0
+                metrics['divergence_rate_percent'] = 0.0
+                metrics['final_td_loss'] = 0.0
+        else:
+            metrics['divergence_detected'] = 0.0
+            metrics['divergence_rate_percent'] = 0.0
+            metrics['final_td_loss'] = 0.0
         
         # 5. Policy-Data KL Divergence
         if self.policy_actions_buffer and self.data_actions_buffer:
@@ -248,6 +288,8 @@ class MetricsTracker:
             except Exception as e:
                 print(f"Warning: Could not compute KL divergence: {e}")
                 metrics['kl_policy_data'] = 0.0
+        else:
+            metrics['kl_policy_data'] = 0.0
         
         # 6. Effective Sample Size (AWFM)
         if self.weights_buffer:
@@ -257,6 +299,8 @@ class MetricsTracker:
             except Exception as e:
                 print(f"Warning: Could not compute ESS: {e}")
                 metrics['awfm_ess'] = 1.0
+        else:
+            metrics['awfm_ess'] = 1.0
         
         return metrics
     
@@ -266,8 +310,8 @@ class MetricsTracker:
         
         # Add prefix to metric names
         wandb_metrics = {f"{prefix}/{k}": v for k, v in metrics.items()}
-        wandb_metrics['step'] = step
         
+        # Log to wandb
         wandb.log(wandb_metrics, step=step)
         return metrics
 
