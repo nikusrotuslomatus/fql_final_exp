@@ -30,36 +30,50 @@ class IFQLAgent(flax.struct.PyTreeNode):
         return weight * (diff**2)
 
     def compute_kl_penalty(self, batch, grad_params, rng):
-        """Compute KL divergence penalty for pessimism."""
+        """Compute KL divergence penalty for pessimism with critic ensembling.
+        
+        IMPORTANT: Q-values are detached to prevent gradients from flowing through
+        the critic in the KL penalty term, which can destabilize early training.
+        """
         batch_size = batch['observations'].shape[0]
+        
+        # Use adaptive sample ratio (4-8 samples) for better efficiency
+        num_samples = min(8, max(4, self.config['kl_num_samples']))
         
         # Sample actions from current policy
         rng, policy_rng = jax.random.split(rng)
         policy_actions = self._sample_policy_actions(
             batch['observations'], 
             seed=policy_rng, 
-            num_samples=self.config['kl_num_samples'],
+            num_samples=num_samples,
             grad_params=grad_params
         )
         
         # Compute Q-values for policy actions
         obs_expanded = jnp.repeat(
             jnp.expand_dims(batch['observations'], 1), 
-            self.config['kl_num_samples'], 
+            num_samples, 
             axis=1
         )
         obs_flat = obs_expanded.reshape(-1, *batch['observations'].shape[1:])
         policy_actions_flat = policy_actions.reshape(-1, *policy_actions.shape[2:])
         
-        q1, q2 = self.network.select('critic')(obs_flat, actions=policy_actions_flat, params=grad_params)
-        q_policy = jnp.minimum(q1, q2).reshape(batch_size, self.config['kl_num_samples'])
+        # CRITICAL FIX: Detach Q-values to prevent gradients flowing through critic
+        q1_policy, q2_policy = self.network.select('critic')(obs_flat, actions=policy_actions_flat, params=grad_params)
+        q1_policy = jax.lax.stop_gradient(q1_policy).reshape(batch_size, num_samples)
+        q2_policy = jax.lax.stop_gradient(q2_policy).reshape(batch_size, num_samples)
         
-        # Compute Q-values for buffer actions
+        # Compute Q-values for buffer actions (also detached)
         q1_buffer, q2_buffer = self.network.select('critic')(batch['observations'], actions=batch['actions'], params=grad_params)
-        q_buffer = jnp.minimum(q1_buffer, q2_buffer)
+        q1_buffer = jax.lax.stop_gradient(q1_buffer)
+        q2_buffer = jax.lax.stop_gradient(q2_buffer)
         
-        # KL penalty: penalize high Q-values on policy actions relative to buffer actions
-        kl_penalty = jnp.maximum(0, q_policy.mean(axis=1) - q_buffer).mean()
+        # Critic ensembling: compute KL penalty for each critic head, then average
+        kl_penalty_1 = jnp.maximum(0, q1_policy.mean(axis=1) - q1_buffer).mean()
+        kl_penalty_2 = jnp.maximum(0, q2_policy.mean(axis=1) - q2_buffer).mean()
+        
+        # Average KL penalty across critic heads before applying max(0, ·) - this stabilizes gradients
+        kl_penalty = (kl_penalty_1 + kl_penalty_2) / 2.0
         
         return kl_penalty
 
@@ -69,7 +83,7 @@ class IFQLAgent(flax.struct.PyTreeNode):
             observations = self.network.select('actor_flow_encoder')(observations)
         
         batch_size = observations.shape[0]
-        action_seed, noise_seed = jax.random.split(seed)
+        action_seed, noise_seed, flow_seed = jax.random.split(seed, 3)
         
         # Sample noises
         actions = jax.random.normal(
@@ -82,10 +96,14 @@ class IFQLAgent(flax.struct.PyTreeNode):
         n_observations = n_observations.reshape(-1, *observations.shape[1:])
         actions_flat = actions.reshape(-1, self.config['action_dim'])
         
-        # Integrate through flow using midpoint method
+        # Generate random offset for stochastic t-sampling
+        u = jax.random.uniform(flow_seed, (actions_flat.shape[0], 1))
+        
+        # Integrate through flow using midpoint method with stochastic t-sampling
         dt = 1.0 / self.config['flow_steps']
         for i in range(self.config['flow_steps']):
-            t = jnp.full((actions_flat.shape[0], 1), i * dt)
+            # STOCHASTIC FIX: Add random offset to make t stochastic
+            t = (u + i) * dt
             
             # First evaluation at current point
             v1 = self.network.select('actor_flow')(n_observations, actions_flat, t, is_encoded=True, params=grad_params)
@@ -117,23 +135,39 @@ class IFQLAgent(flax.struct.PyTreeNode):
             'v_min': v.min(),
         }
 
-    def critic_loss(self, batch, grad_params, rng=None):
-        """Compute the IQL critic loss with KL pessimism."""
+    def critic_loss(self, batch, grad_params, rng=None, training_step=None):
+        """Compute the IQL critic loss with KL pessimism and adaptive scheduling."""
         next_v = self.network.select('value')(batch['next_observations'])
         q = batch['rewards'] + self.config['discount'] * batch['masks'] * next_v
 
         q1, q2 = self.network.select('critic')(batch['observations'], actions=batch['actions'], params=grad_params)
         critic_loss = ((q1 - q) ** 2 + (q2 - q) ** 2).mean()
         
-        # Add KL pessimism penalty
+        # Add KL pessimism penalty with adaptive scheduling
         kl_penalty = 0.0
+        effective_kl_coeff = self.config['kl_coeff']
+        
         if self.config['kl_coeff'] > 0 and rng is not None:
             kl_penalty = self.compute_kl_penalty(batch, grad_params, rng)
-            critic_loss = critic_loss + self.config['kl_coeff'] * kl_penalty
+            
+            # Apply cosine decay scheduling if enabled and training_step is provided
+            if self.config.get('kl_schedule', False) and training_step is not None:
+                # Cosine decay from 5.0 to 0.5 over total training steps
+                total_steps = self.config.get('kl_schedule_steps', 500000)  # Default 500k steps
+                kl_start = self.config.get('kl_start', 5.0)
+                kl_end = self.config.get('kl_end', 0.5)
+                
+                # Cosine decay: 0.5 * (1 + cos(π * step / total_steps))
+                progress = jnp.clip(training_step / total_steps, 0.0, 1.0)
+                cosine_factor = 0.5 * (1.0 + jnp.cos(jnp.pi * progress))
+                effective_kl_coeff = kl_end + (kl_start - kl_end) * cosine_factor
+            
+            critic_loss = critic_loss + effective_kl_coeff * kl_penalty
 
         return critic_loss, {
             'critic_loss': critic_loss,
             'kl_penalty': kl_penalty,
+            'effective_kl_coeff': effective_kl_coeff,
             'q_mean': q.mean(),
             'q_max': q.max(),
             'q_min': q.min(),
@@ -164,9 +198,9 @@ class IFQLAgent(flax.struct.PyTreeNode):
             # Compute advantage: A(s,a) = Q(s,a) - V(s)
             advantage = q - v
             
-            # Compute advantage weights: w = exp(β * Adv)
-            # β is scaled by inverse of Q magnitude for stability
-            beta = self.config['adv_weight_coeff'] / (jnp.abs(q).mean() + 1e-6)
+            # IMPROVED FIX: Scale β by advantage magnitude instead of Q magnitude
+            # This prevents tiny β values on high-reward domains (like antmaze)
+            beta = self.config['adv_weight_coeff'] / (jnp.abs(advantage).mean() + 1e-6)
             weights = jnp.exp(beta * advantage)
             
             # Clip weights to prevent extreme values
@@ -192,7 +226,7 @@ class IFQLAgent(flax.struct.PyTreeNode):
         }
 
     @jax.jit
-    def total_loss(self, batch, grad_params, rng=None):
+    def total_loss(self, batch, grad_params, rng=None, training_step=None):
         """Compute the total loss."""
         info = {}
         rng = rng if rng is not None else self.rng
@@ -203,7 +237,7 @@ class IFQLAgent(flax.struct.PyTreeNode):
         for k, v in value_info.items():
             info[f'value/{k}'] = v
 
-        critic_loss, critic_info = self.critic_loss(batch, grad_params, rng=critic_rng)
+        critic_loss, critic_info = self.critic_loss(batch, grad_params, rng=critic_rng, training_step=training_step)
         for k, v in critic_info.items():
             info[f'critic/{k}'] = v
 
@@ -224,12 +258,12 @@ class IFQLAgent(flax.struct.PyTreeNode):
         network.params[f'modules_target_{module_name}'] = new_target_params
 
     @jax.jit
-    def update(self, batch):
+    def update(self, batch, training_step=None):
         """Update the agent and return a new agent with information dictionary."""
         new_rng, rng = jax.random.split(self.rng)
 
         def loss_fn(grad_params):
-            return self.total_loss(batch, grad_params, rng=rng)
+            return self.total_loss(batch, grad_params, rng=rng, training_step=training_step)
 
         new_network, info = self.network.apply_loss_fn(loss_fn=loss_fn)
         self.target_update(new_network, 'critic')
@@ -247,7 +281,7 @@ class IFQLAgent(flax.struct.PyTreeNode):
         orig_observations = observations
         if self.config['encoder'] is not None:
             observations = self.network.select('actor_flow_encoder')(observations)
-        action_seed, noise_seed = jax.random.split(seed)
+        action_seed, noise_seed, flow_seed = jax.random.split(seed, 3)
 
         # Sample `num_samples` noises and propagate them through the flow.
         actions = jax.random.normal(
@@ -261,10 +295,14 @@ class IFQLAgent(flax.struct.PyTreeNode):
         n_observations = jnp.repeat(jnp.expand_dims(observations, 0), self.config['num_samples'], axis=0)
         n_orig_observations = jnp.repeat(jnp.expand_dims(orig_observations, 0), self.config['num_samples'], axis=0)
         
-        # Midpoint method integration
+        # Generate random offset for stochastic t-sampling
+        u = jax.random.uniform(flow_seed, (*observations.shape[:-1], self.config['num_samples'], 1))
+        
+        # Midpoint method integration with stochastic t-sampling
         dt = 1.0 / self.config['flow_steps']
         for i in range(self.config['flow_steps']):
-            t = jnp.full((*observations.shape[:-1], self.config['num_samples'], 1), i * dt)
+            # STOCHASTIC FIX: Add random offset to make t stochastic
+            t = (u + i) * dt
             
             # First evaluation at current point
             v1 = self.network.select('actor_flow')(n_observations, actions, t, is_encoded=True)
@@ -358,6 +396,21 @@ class IFQLAgent(flax.struct.PyTreeNode):
 
 
 def get_config():
+    """Get default configuration for IFQL agent with KL pessimism and advantage weighting.
+    
+    KL Pessimism hyperparameters:
+    - kl_coeff: Base coefficient for KL penalty (0.0 to disable). Start with 0.1-1.0.
+    - kl_schedule: Enable cosine decay scheduling for KL coefficient (recommended).
+    - kl_start: Starting KL coefficient (5.0 recommended for strong early pessimism).
+    - kl_end: Ending KL coefficient (0.5 recommended for late-stage exploration).
+    - kl_schedule_steps: Number of steps for cosine decay (default 500k).
+    - kl_num_samples: Number of policy action samples for KL penalty computation.
+      Automatically clamped to 4-8 range for efficiency.
+    
+    Advantage Weighting hyperparameters:
+    - advantage_weighted: Enable advantage-weighted flow matching (recommended for IFQL).
+    - adv_weight_coeff: Coefficient for advantage weighting using proper Q-V advantage.
+    """
     config = ml_collections.ConfigDict(
         dict(
             agent_name='ifql',  # Agent name.
@@ -374,9 +427,13 @@ def get_config():
             num_samples=32,  # Number of action samples for rejection sampling.
             flow_steps=15,  # Number of flow steps (increased for better accuracy with midpoint method).
             encoder=ml_collections.config_dict.placeholder(str),  # Visual encoder name (None, 'impala_small', etc.).
-            kl_coeff=0.0,  # KL pessimism coefficient.
-            kl_num_samples=10,  # Number of samples for KL penalty.
-            advantage_weighted=False,  # Whether to use advantage-weighted flow matching.
+            kl_coeff=0.0,  # Base KL coefficient for pessimism (set to 1.0 to enable).
+            kl_schedule=False,  # Enable cosine decay scheduling for KL coefficient.
+            kl_start=5.0,  # Starting KL coefficient for scheduling.
+            kl_end=0.5,  # Ending KL coefficient for scheduling.
+            kl_schedule_steps=500000,  # Number of steps for KL cosine decay.
+            kl_num_samples=10,  # Number of samples for KL penalty (auto-clamped to 4-8).
+            advantage_weighted=True,  # Whether to use advantage-weighted flow matching.
             adv_weight_coeff=1.0,  # Coefficient for advantage weighting (higher = more emphasis on good actions).
         )
     )

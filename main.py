@@ -166,7 +166,11 @@ def main(_):
             if config['agent_name'] == 'rebrac':
                 agent, update_info = agent.update(batch, full_update=(i % config.get('actor_freq', 2) == 0))
             else:
-                agent, update_info = agent.update(batch)
+                # Pass training step for KL scheduling in FQL/IFQL agents
+                if config['agent_name'] in ['fql', 'ifql']:
+                    agent, update_info = agent.update(batch, training_step=i)
+                else:
+                    agent, update_info = agent.update(batch)
             
             # Track training metrics for comprehensive evaluation
             td_loss = update_info.get('critic/critic_loss', 0.0)
