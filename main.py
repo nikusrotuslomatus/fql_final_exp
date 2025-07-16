@@ -32,6 +32,22 @@ from agents import agents
 from envs.env_utils import make_env_and_datasets
 from utils.datasets import Dataset, ReplayBuffer
 from utils.evaluation import evaluate, flatten
+
+# ====================================================================
+# Helper utilities
+# ====================================================================
+
+def get_env_type(env_name: str) -> str:
+    """Return a short descriptor like 'antmaze', 'puzzle', 'humanoid'."""
+    env_lower = env_name.lower()
+    if 'antmaze' in env_lower:
+        return 'antmaze'
+    if 'humanoid' in env_lower:
+        return 'humanoid'
+    if 'puzzle' in env_lower:
+        return 'puzzle'
+    # fallback to first token
+    return env_lower.split('-')[0].split('_')[0]
 from utils.evaluation_metrics import MetricsTracker
 from utils.csv_logger import CSVMetricsLogger, create_matplotlib_script
 from utils.flax_utils import restore_agent, save_agent
@@ -49,6 +65,7 @@ flags.DEFINE_integer('restore_epoch', None, 'Restore epoch.')
 flags.DEFINE_integer('offline_steps', 1000000, 'Number of offline steps.')
 flags.DEFINE_integer('online_steps', 0, 'Number of online steps.')
 flags.DEFINE_integer('buffer_size', 2000000, 'Replay buffer size.')
+flags.DEFINE_string('config_name', 'baseline', 'Configuration name (baseline, kl_only, kl_awfm, etc.).')
 flags.DEFINE_integer('log_interval', 5000, 'Logging interval.')
 flags.DEFINE_integer('eval_interval', 100000, 'Evaluation interval.')
 flags.DEFINE_integer('save_interval', 1000000, 'Saving interval.')
@@ -134,8 +151,9 @@ def main(_):
     # Initialize comprehensive metrics tracker
     metrics_tracker = MetricsTracker(FLAGS.env_name)
     
-    # Initialize CSV logger
-    run_name = f"{FLAGS.env_name}_{FLAGS.run_group}_{int(time.time())}"
+    # Initialize CSV logger with compact naming: <env>_<config>
+    env_type = get_env_type(FLAGS.env_name)
+    run_name = f"{env_type}_{FLAGS.config_name}"
     csv_logger = CSVMetricsLogger(log_dir="csv_logs", run_name=run_name)
     
     # Create matplotlib script for visualization

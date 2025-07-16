@@ -52,7 +52,8 @@ def run_experiment(env_name, config_name, config_args, seed, exp_group):
         f'--eval_episodes={SERVER_CONFIG["eval_episodes"]}',
         f'--eval_interval={SERVER_CONFIG["eval_interval"]}',
         f'--log_interval={SERVER_CONFIG["log_interval"]}',
-        '--use_wandb=False',  # Отключаем wandb для экономии ресурсов
+        '--use_wandb=True',   # Включаем wandb для отслеживания
+        f'--config_name={config_name}',
         f'--agent.batch_size={SERVER_CONFIG["batch_size"]}',
     ]
     

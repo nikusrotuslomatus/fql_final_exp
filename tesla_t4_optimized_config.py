@@ -16,7 +16,7 @@ def get_tesla_t4_config():
     """Оптимальная конфигурация для Tesla T4 16GB"""
     return {
         # Основные параметры для 10-12 часов
-        'offline_steps': 100000,        
+        'offline_steps': 150000,        
         'eval_episodes': 25,            # Компромисс между точностью и временем
         'eval_interval': 40000,         # Каждые 40k шагов
         'log_interval': 4000,           # Частое логирование для мониторинга
@@ -29,7 +29,7 @@ def get_tesla_t4_config():
         'kl_num_samples': 8,            # Достаточно для качественного KL penalty
         
         # Дополнительные оптимизации
-        'use_wandb': False,             # Экономим ресурсы
+        'use_wandb': True,              # Включаем wandb для мониторинга
         'num_seeds': 3,                 # Полноценное тестирование
         'max_parallel': 1,              # Одна GPU - один процесс
         
@@ -132,7 +132,8 @@ run_experiment() {{
         --eval_episodes=$EVAL_EPISODES \\
         --eval_interval=$EVAL_INTERVAL \\
         --log_interval=$LOG_INTERVAL \\
-        --use_wandb=false \\
+        --use_wandb=true \\
+        --config_name="$config_name" \\
         --agent.batch_size=$BATCH_SIZE \\
         --agent.flow_steps=$FLOW_STEPS \\
         --agent.kl_num_samples=$KL_SAMPLES \\

@@ -32,11 +32,13 @@ def compute_d4rl_score(returns: np.ndarray, env_name: str) -> float:
         'hopper-medium-v2': {'min': -20.3, 'max': 3234.3},
         'hopper-medium-replay-v2': {'min': -20.3, 'max': 3234.3},
         'hopper-medium-expert-v2': {'min': -20.3, 'max': 3234.3},
-        
+        'humanoidmaze-medium-navigate-singletask-v0': {'min': -4000.0, 'max': 6000.0},
         # Kitchen
         'kitchen-complete-v0': {'min': 0.0, 'max': 4.0},
         'kitchen-partial-v0': {'min': 0.0, 'max': 4.0},
         'kitchen-mixed-v0': {'min': 0.0, 'max': 4.0},
+        # Puzzle (OGBench) – rough estimate based on reward scale (-4000 worst, -500 best)
+        'puzzle_3x3_play_singletask_v0': {'min': -4000.0, 'max': -500.0},
         
         # Default fallback
         'default': {'min': 0.0, 'max': 1.0}
