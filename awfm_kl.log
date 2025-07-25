@@ -1,0 +1,88 @@
+📊 CSV Logger initialized: csv_logs/puzzle_kl_awfm_*.csv
+📈 Matplotlib script created: csv_logs/plot_puzzle_kl_awfm_metrics.py
+   Run with: python csv_logs/plot_puzzle_kl_awfm_metrics.py
+Agent config type: <class 'ml_collections.config_dict.config_dict.ConfigDict'>
+Agent config keys: ['action_dim', 'actor_hidden_dims', 'actor_layer_norm', 'adv_weight_coeff', 'advantage_weighted', 'agent_name', 'alpha', 'batch_size', 'discount', 'encoder', 'flow_steps', 'kl_coeff', 'kl_end', 'kl_num_samples', 'kl_schedule', 'kl_schedule_steps', 'kl_start', 'layer_norm', 'lr', 'normalize_q_loss', 'ob_dims', 'q_agg', 'tau', 'value_hidden_dims']
+Agent name: fql
+Advantage weighted: True
+KL coeff: 0.3
+Adv weight coeff: 1.0
+Agent config after creation: FrozenDict({
+    action_dim: 5,
+    actor_hidden_dims: (512, 512, 512, 512),
+    actor_layer_norm: False,
+    adv_weight_coeff: 1.0,
+    advantage_weighted: True,
+    agent_name: 'fql',
+    alpha: 10.0,
+    batch_size: 256,
+    discount: 0.99,
+    encoder: None,
+    flow_steps: 15,
+    kl_coeff: 0.3,
+    kl_end: 0.5,
+    kl_num_samples: 10,
+    kl_schedule: False,
+    kl_schedule_steps: 500000,
+    kl_start: 5.0,
+    layer_norm: True,
+    lr: 0.0003,
+    normalize_q_loss: False,
+    ob_dims: [55],
+    q_agg: 'mean',
+    tau: 0.005,
+    value_hidden_dims: (512, 512, 512, 512),
+})
+100%|███████████████████████████████████████████████████████████████████████████████████████████████████████| 25/25 [01:06<00:00,  2.65s/it]
+100%|███████████████████████████████████████████████████████████████████████████████████████████████████████| 25/25 [01:20<00:00,  3.21s/it]
+First info_dict type: <class 'list'>
+First info_dict[0] keys: ['prev_button_states', 'button_states', 'prev_qpos', 'prev_qvel', 'qpos', 'qvel', 'control', 'time', 'success', 'total', 'episode']
+Step 1: Added 25 returns, mean=-2513.520
+Step 1: Tracking eval score -2513.520
+Computed mean_return: -2513.520
+100%|███████████████████████████████████████████████████████████████████████████████████████████████████████| 25/25 [01:25<00:00,  3.44s/it]
+First info_dict type: <class 'list'>
+First info_dict[0] keys: ['prev_button_states', 'button_states', 'prev_qpos', 'prev_qvel', 'qpos', 'qvel', 'control', 'time', 'success', 'total', 'episode']
+Step 30000: Added 25 returns, mean=-1585.240
+Step 30000: Tracking eval score -1585.240
+Computed mean_return: -2049.380
+100%|███████████████████████████████████████████████████████████████████████████████████████████████████████| 25/25 [01:19<00:00,  3.16s/it]
+First info_dict type: <class 'list'>
+First info_dict[0] keys: ['prev_button_states', 'button_states', 'prev_qpos', 'prev_qvel', 'qpos', 'qvel', 'control', 'time', 'success', 'total', 'episode']
+Step 60000: Added 25 returns, mean=-1438.040
+Step 60000: Tracking eval score -1438.040
+Computed mean_return: -1845.600
+100%|███████████████████████████████████████████████████████████████████████████████████████████████████████| 25/25 [01:15<00:00,  3.04s/it]
+First info_dict type: <class 'list'>
+First info_dict[0] keys: ['prev_button_states', 'button_states', 'prev_qpos', 'prev_qvel', 'qpos', 'qvel', 'control', 'time', 'success', 'total', 'episode']
+Step 90000: Added 25 returns, mean=-1413.560
+Step 90000: Tracking eval score -1413.560
+Computed mean_return: -1737.590
+100%|███████████████████████████████████████████████████████████████████████████████████████████████████████| 25/25 [01:23<00:00,  3.35s/it]
+First info_dict type: <class 'list'>
+First info_dict[0] keys: ['prev_button_states', 'button_states', 'prev_qpos', 'prev_qvel', 'qpos', 'qvel', 'control', 'time', 'success', 'total', 'episode']
+Step 120000: Added 25 returns, mean=-1542.280
+Step 120000: Tracking eval score -1542.280
+Computed mean_return: -1698.528
+100%|███████████████████████████████████████████████████████████████████████████████████████████████| 150000/150000 [38:15<00:00, 65.33it/s]
+First info_dict type: <class 'list'>
+First info_dict[0] keys: ['prev_button_states', 'button_states', 'prev_qpos', 'prev_qvel', 'qpos', 'qvel', 'control', 'time', 'success', 'total', 'episode']
+Step 150000: Added 25 returns, mean=-1798.360
+Step 150000: Tracking eval score -1798.360
+Computed mean_return: -1715.167
+Traceback (most recent call last):
+  File "/mnt/local/data/dsherki/rl_jax/Untitled Folder/fql_final_exp/main.py", line 407, in <module>
+    app.run(main)
+  File "/usr/local/lib/python3.10/dist-packages/absl/app.py", line 312, in run
+    _run_main(main, args)
+  File "/usr/local/lib/python3.10/dist-packages/absl/app.py", line 258, in _run_main
+    sys.exit(main(argv))
+  File "/mnt/local/data/dsherki/rl_jax/Untitled Folder/fql_final_exp/main.py", line 401, in main
+    csv_logger.close()
+  File "/mnt/local/data/dsherki/rl_jax/Untitled Folder/fql_final_exp/utils/csv_logger.py", line 214, in close
+    self.create_summary_csv()
+  File "/mnt/local/data/dsherki/rl_jax/Untitled Folder/fql_final_exp/utils/csv_logger.py", line 189, in create_summary_csv
+    metric_steps = [s for s, _ in self.metrics_data[metric_name]]
+  File "/mnt/local/data/dsherki/rl_jax/Untitled Folder/fql_final_exp/utils/csv_logger.py", line 189, in <listcomp>
+    metric_steps = [s for s, _ in self.metrics_data[metric_name]]
+KeyboardInterrupt
